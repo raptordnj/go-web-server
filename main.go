@@ -60,7 +60,7 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Set custom headers
 		w.Header().Set("Server", "Go-Web-Server")
-		w.Header().Set("X-Powered-By", "Go-Web-Server")
+		w.Header().Set("X-Powered-By", "PHP")
 
 		// Serve all responses from PHP-FPM (Front Controller pattern)
 		// We route everything to /index.php, preserving the original RequestURI for PHP to read
