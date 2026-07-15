@@ -23,3 +23,7 @@ vhosts:
     static_dir: "./static_legacy"
     fpm_network: "unix"
     fpm_address: "/run/php/php8.4-fpm.sock"
+
+  # Example: Reverse Proxy to a Node.js or Python backend
+  "api.local":
+    proxy_pass: "http://127.0.0.1:3000"

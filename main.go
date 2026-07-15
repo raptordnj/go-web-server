@@ -4,6 +4,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ type VHostConfig struct {
 	StaticDir  string `yaml:"static_dir"`
 	FpmNetwork string `yaml:"fpm_network"`
 	FpmAddress string `yaml:"fpm_address"`
+	ProxyPass  string `yaml:"proxy_pass"`
 }
 
 type Config struct {
@@ -31,6 +34,7 @@ type Config struct {
 type VHost struct {
 	AbsStaticDir string
 	PhpHandler   http.Handler
+	ProxyHandler http.Handler
 	PhpVersion   string
 }
 
@@ -54,6 +58,19 @@ func loadConfig() Config {
 }
 
 func setupVHost(vc VHostConfig) (*VHost, error) {
+	vh := &VHost{}
+
+	// If ProxyPass is defined, this VHost acts entirely as a reverse proxy
+	if vc.ProxyPass != "" {
+		targetUrl, err := url.Parse(vc.ProxyPass)
+		if err != nil {
+			return nil, err
+		}
+		vh.ProxyHandler = httputil.NewSingleHostReverseProxy(targetUrl)
+		return vh, nil
+	}
+
+	// Otherwise, it's a FastCGI PHP VHost
 	if vc.StaticDir == "" {
 		vc.StaticDir = "./static" // Fallback
 	}
@@ -61,8 +78,8 @@ func setupVHost(vc VHostConfig) (*VHost, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Create directory if it doesn't exist to prevent crashes
 	os.MkdirAll(absStaticDir, 0755)
+	vh.AbsStaticDir = absStaticDir
 
 	fpmNetwork := vc.FpmNetwork
 	fpmAddress := vc.FpmAddress
@@ -90,7 +107,7 @@ func setupVHost(vc VHostConfig) (*VHost, error) {
 
 	connFactory := gofast.SimpleConnFactory(fpmNetwork, fpmAddress)
 	clientFactory := gofast.SimpleClientFactory(connFactory)
-	phpHandler := gofast.NewHandler(
+	vh.PhpHandler = gofast.NewHandler(
 		gofast.NewPHPFS(absStaticDir)(gofast.BasicSession),
 		clientFactory,
 	)
@@ -117,12 +134,9 @@ func setupVHost(vc VHostConfig) (*VHost, error) {
 			phpVersion = "PHP/" + match
 		}
 	}
+	vh.PhpVersion = phpVersion
 
-	return &VHost{
-		AbsStaticDir: absStaticDir,
-		PhpHandler:   phpHandler,
-		PhpVersion:   phpVersion,
-	}, nil
+	return vh, nil
 }
 
 func main() {
@@ -146,7 +160,11 @@ func main() {
 			continue
 		}
 		vhosts[host] = vh
-		log.Printf("Loaded VHost: %s (Dir: %s)", host, vh.AbsStaticDir)
+		if vh.ProxyHandler != nil {
+			log.Printf("Loaded VHost: %s (Proxy: %s)", host, vc.ProxyPass)
+		} else {
+			log.Printf("Loaded VHost: %s (Dir: %s)", host, vh.AbsStaticDir)
+		}
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -162,15 +180,28 @@ func main() {
 			vh = defaultVH
 		}
 
+		// Set the generic server header
 		w.Header().Set("Server", "Go-Web-Server")
-		w.Header().Set("X-Powered-By", vh.PhpVersion)
 
+		if vh.ProxyHandler != nil {
+			// Proxy the request to the upstream server
+			vh.ProxyHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// Otherwise, it's a PHP FastCGI request
+		w.Header().Set("X-Powered-By", vh.PhpVersion)
 		r.URL.Path = "/index.php"
 		vh.PhpHandler.ServeHTTP(w, r)
 	})
 
 	log.Printf("Starting server on http://localhost%s\n", port)
-	log.Printf("Default VHost routing ALL requests to %s/index.php\n", defaultVH.AbsStaticDir)
+	
+	if defaultVH.ProxyHandler != nil {
+		log.Printf("Default VHost configured as a Reverse Proxy\n")
+	} else {
+		log.Printf("Default VHost routing ALL requests to %s/index.php\n", defaultVH.AbsStaticDir)
+	}
 
 	err = http.ListenAndServe(port, nil)
 	if err != nil {
