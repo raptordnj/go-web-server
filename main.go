@@ -21,7 +21,7 @@ func main() {
 	// Read FPM connection settings from environment, or try to auto-detect a Unix socket, then default to TCP.
 	fpmNetwork := os.Getenv("FPM_NETWORK")
 	fpmAddress := os.Getenv("FPM_ADDRESS")
-	
+
 	if fpmNetwork == "" || fpmAddress == "" {
 		// Try auto-detecting common Unix sockets on Linux
 		commonSockets := []string{
@@ -29,7 +29,7 @@ func main() {
 			"/run/php/php8.5-fpm.sock",
 			"/run/php/php8.4-fpm.sock",
 		}
-		
+
 		foundSocket := false
 		for _, sockPath := range commonSockets {
 			if _, err := os.Stat(sockPath); err == nil {
@@ -62,14 +62,31 @@ func main() {
 
 	// Main routing handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Set a custom Server header to identify our web server
+		w.Header().Set("Server", "Go-Web-Server")
+
 		path := r.URL.Path
-
-		// Map the request URL path to the local filesystem path
 		fullPath := filepath.Join(absStaticDir, filepath.FromSlash(path))
-
-		// Check if the requested path is a directory
 		info, err := os.Stat(fullPath)
-		if err == nil && info.IsDir() {
+		exists := !os.IsNotExist(err)
+
+		// ---------------------------------------------------------
+		// Mod_Rewrite logic (similar to Apache's fallback to index.php)
+		// If the requested file or directory does NOT exist on disk, 
+		// forward the request to /index.php so PHP frameworks (Laravel, 
+		// WordPress, etc) can handle the custom route via REQUEST_URI.
+		// ---------------------------------------------------------
+		if !exists {
+			indexPath := filepath.Join(absStaticDir, "index.php")
+			if _, errIdx := os.Stat(indexPath); errIdx == nil {
+				r.URL.Path = "/index.php"
+				phpHandler.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// Check if the requested path is an existing directory
+		if exists && info.IsDir() {
 			// If missing a trailing slash, redirect to ensure relative paths work in the browser
 			if !strings.HasSuffix(path, "/") {
 				http.Redirect(w, r, path+"/", http.StatusMovedPermanently)
@@ -81,7 +98,7 @@ func main() {
 				"index.php", "index.html", "index.htm",
 				"default.php", "default.html", "default.htm",
 			}
-			
+
 			for _, indexFile := range indexFiles {
 				indexPath := filepath.Join(fullPath, indexFile)
 				if _, err := os.Stat(indexPath); err == nil {
