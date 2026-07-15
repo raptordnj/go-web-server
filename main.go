@@ -10,19 +10,66 @@ import (
 	"strings"
 
 	"github.com/yookoala/gofast"
+	"gopkg.in/yaml.v3"
 )
 
+type Config struct {
+	Server struct {
+		Port      string `yaml:"port"`
+		StaticDir string `yaml:"static_dir"`
+	} `yaml:"server"`
+	FPM struct {
+		Network string `yaml:"network"`
+		Address string `yaml:"address"`
+	} `yaml:"fpm"`
+}
+
+func loadConfig() Config {
+	// Setup default configuration
+	cfg := Config{}
+	cfg.Server.Port = "8080"
+	cfg.Server.StaticDir = "./static"
+
+	// Try loading from config.yaml
+	data, err := os.ReadFile("config.yaml")
+	if err == nil {
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Printf("Warning: failed to parse config.yaml: %v", err)
+		}
+	}
+
+	// Override with environment variables if present
+	if p := os.Getenv("PORT"); p != "" {
+		cfg.Server.Port = p
+	}
+	if fn := os.Getenv("FPM_NETWORK"); fn != "" {
+		cfg.FPM.Network = fn
+	}
+	if fa := os.Getenv("FPM_ADDRESS"); fa != "" {
+		cfg.FPM.Address = fa
+	}
+
+	return cfg
+}
+
 func main() {
-	staticDir := "./static"
+	cfg := loadConfig()
+
+	// Ensure port starts with colon
+	port := cfg.Server.Port
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
+
+	staticDir := cfg.Server.StaticDir
 	// Ensure the static directory path is absolute. PHP-FPM needs absolute paths.
 	absStaticDir, err := filepath.Abs(staticDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Read FPM connection settings from environment, or try to auto-detect a Unix socket, then default to TCP.
-	fpmNetwork := os.Getenv("FPM_NETWORK")
-	fpmAddress := os.Getenv("FPM_ADDRESS")
+	fpmNetwork := cfg.FPM.Network
+	fpmAddress := cfg.FPM.Address
 
 	if fpmNetwork == "" || fpmAddress == "" {
 		// Try auto-detecting common Unix sockets on Linux
@@ -96,7 +143,6 @@ func main() {
 		phpHandler.ServeHTTP(w, r)
 	})
 
-	port := ":8080"
 	log.Printf("Starting server on http://localhost%s\n", port)
 	log.Printf("Routing ALL requests to %s/index.php\n", absStaticDir)
 	log.Printf("Proxying PHP requests to FastCGI on %s:%s\n", fpmNetwork, fpmAddress)

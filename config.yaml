@@ -1,0 +1,16 @@
+# Go Web Server Configuration
+
+server:
+  # Port to listen on
+  port: "8080"
+  # Directory containing files to serve and index.php
+  static_dir: "./static"
+
+fpm:
+  # FastCGI network type: "unix" or "tcp"
+  # Leave empty to auto-detect
+  network: ""
+  
+  # FastCGI address (e.g., /run/php/php-fpm.sock or 127.0.0.1:9000)
+  # Leave empty to auto-detect
+  address: ""
