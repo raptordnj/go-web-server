@@ -7,12 +7,19 @@ server:
 # The default virtual host if no specific domain matches the request's Host header
 default_vhost:
   static_dir: "./static"
-  fpm_network: ""
-  fpm_address: ""
+  fpm_network: "unix"
+  fpm_address: "/run/php/php-fpm.sock" # Defaults to your php8.5-fpm.sock symlink
 
 # You can define multiple domains (Virtual Hosts) here
 vhosts:
-  "example.local":
-    static_dir: "./static_example"
-    fpm_network: ""
-    fpm_address: ""
+  # Example: Running the main site on PHP 8.5
+  "localhost":
+    static_dir: "./static"
+    fpm_network: "unix"
+    fpm_address: "/run/php/php8.5-fpm.sock"
+    
+  # Example: Running a legacy site on PHP 8.4
+  "legacy.local":
+    static_dir: "./static_legacy"
+    fpm_network: "unix"
+    fpm_address: "/run/php/php8.4-fpm.sock"
