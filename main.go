@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,24 +14,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type VHostConfig struct {
+	StaticDir  string `yaml:"static_dir"`
+	FpmNetwork string `yaml:"fpm_network"`
+	FpmAddress string `yaml:"fpm_address"`
+}
+
 type Config struct {
 	Server struct {
-		Port      string `yaml:"port"`
-		StaticDir string `yaml:"static_dir"`
+		Port string `yaml:"port"`
 	} `yaml:"server"`
-	FPM struct {
-		Network string `yaml:"network"`
-		Address string `yaml:"address"`
-	} `yaml:"fpm"`
+	DefaultVHost VHostConfig            `yaml:"default_vhost"`
+	VHosts       map[string]VHostConfig `yaml:"vhosts"`
+}
+
+type VHost struct {
+	AbsStaticDir string
+	PhpHandler   http.Handler
+	PhpVersion   string
 }
 
 func loadConfig() Config {
-	// Setup default configuration
 	cfg := Config{}
 	cfg.Server.Port = "8080"
-	cfg.Server.StaticDir = "./static"
+	cfg.DefaultVHost.StaticDir = "./static"
 
-	// Try loading from config.yaml
 	data, err := os.ReadFile("config.yaml")
 	if err == nil {
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -38,47 +46,33 @@ func loadConfig() Config {
 		}
 	}
 
-	// Override with environment variables if present
 	if p := os.Getenv("PORT"); p != "" {
 		cfg.Server.Port = p
-	}
-	if fn := os.Getenv("FPM_NETWORK"); fn != "" {
-		cfg.FPM.Network = fn
-	}
-	if fa := os.Getenv("FPM_ADDRESS"); fa != "" {
-		cfg.FPM.Address = fa
 	}
 
 	return cfg
 }
 
-func main() {
-	cfg := loadConfig()
-
-	// Ensure port starts with colon
-	port := cfg.Server.Port
-	if !strings.HasPrefix(port, ":") {
-		port = ":" + port
+func setupVHost(vc VHostConfig) (*VHost, error) {
+	if vc.StaticDir == "" {
+		vc.StaticDir = "./static" // Fallback
 	}
-
-	staticDir := cfg.Server.StaticDir
-	// Ensure the static directory path is absolute. PHP-FPM needs absolute paths.
-	absStaticDir, err := filepath.Abs(staticDir)
+	absStaticDir, err := filepath.Abs(vc.StaticDir)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
+	// Create directory if it doesn't exist to prevent crashes
+	os.MkdirAll(absStaticDir, 0755)
 
-	fpmNetwork := cfg.FPM.Network
-	fpmAddress := cfg.FPM.Address
+	fpmNetwork := vc.FpmNetwork
+	fpmAddress := vc.FpmAddress
 
 	if fpmNetwork == "" || fpmAddress == "" {
-		// Try auto-detecting common Unix sockets on Linux
 		commonSockets := []string{
 			"/run/php/php-fpm.sock",
 			"/run/php/php8.5-fpm.sock",
 			"/run/php/php8.4-fpm.sock",
 		}
-
 		foundSocket := false
 		for _, sockPath := range commonSockets {
 			if _, err := os.Stat(sockPath); err == nil {
@@ -88,29 +82,22 @@ func main() {
 				break
 			}
 		}
-
-		// Fallback to TCP if no Unix socket is found
 		if !foundSocket {
 			fpmNetwork = "tcp"
 			fpmAddress = "127.0.0.1:9000"
 		}
 	}
 
-	// Create a FastCGI client factory
 	connFactory := gofast.SimpleConnFactory(fpmNetwork, fpmAddress)
 	clientFactory := gofast.SimpleClientFactory(connFactory)
-
-	// Create a PHP handler using gofast middleware
 	phpHandler := gofast.NewHandler(
 		gofast.NewPHPFS(absStaticDir)(gofast.BasicSession),
 		clientFactory,
 	)
 
-	// Detect PHP version dynamically by matching the PHP-FPM socket version
 	phpVersion := "PHP"
 	phpBin := "php"
-	
-	// Check if the FPM address gives us a hint about the version (like php8.5-fpm.sock)
+
 	resolvedAddress := fpmAddress
 	if fpmNetwork == "unix" {
 		if resolved, err := filepath.EvalSymlinks(fpmAddress); err == nil {
@@ -131,23 +118,60 @@ func main() {
 		}
 	}
 
-	// Main routing handler
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Set custom headers
-		w.Header().Set("Server", "Go-Web-Server")
-		w.Header().Set("X-Powered-By", phpVersion)
+	return &VHost{
+		AbsStaticDir: absStaticDir,
+		PhpHandler:   phpHandler,
+		PhpVersion:   phpVersion,
+	}, nil
+}
 
-		// Serve all responses from PHP-FPM (Front Controller pattern)
-		// We route everything to /index.php, preserving the original RequestURI for PHP to read
+func main() {
+	cfg := loadConfig()
+
+	port := cfg.Server.Port
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
+
+	defaultVH, err := setupVHost(cfg.DefaultVHost)
+	if err != nil {
+		log.Fatalf("Failed to setup default vhost: %v", err)
+	}
+
+	vhosts := make(map[string]*VHost)
+	for host, vc := range cfg.VHosts {
+		vh, err := setupVHost(vc)
+		if err != nil {
+			log.Printf("Warning: Failed to setup vhost %s: %v", host, err)
+			continue
+		}
+		vhosts[host] = vh
+		log.Printf("Loaded VHost: %s (Dir: %s)", host, vh.AbsStaticDir)
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if strings.Contains(host, ":") {
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+		}
+
+		vh, ok := vhosts[host]
+		if !ok {
+			vh = defaultVH
+		}
+
+		w.Header().Set("Server", "Go-Web-Server")
+		w.Header().Set("X-Powered-By", vh.PhpVersion)
+
 		r.URL.Path = "/index.php"
-		phpHandler.ServeHTTP(w, r)
+		vh.PhpHandler.ServeHTTP(w, r)
 	})
 
 	log.Printf("Starting server on http://localhost%s\n", port)
-	log.Printf("Routing ALL requests to %s/index.php\n", absStaticDir)
-	log.Printf("Proxying PHP requests to FastCGI on %s:%s\n", fpmNetwork, fpmAddress)
+	log.Printf("Default VHost routing ALL requests to %s/index.php\n", defaultVH.AbsStaticDir)
 
-	// Start the web server
 	err = http.ListenAndServe(port, nil)
 	if err != nil {
 		log.Fatal("Server failed to start: ", err)

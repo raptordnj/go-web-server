@@ -3,14 +3,16 @@
 server:
   # Port to listen on
   port: "8080"
-  # Directory containing files to serve and index.php
-  static_dir: "./static"
 
-fpm:
-  # FastCGI network type: "unix" or "tcp"
-  # Leave empty to auto-detect
-  network: ""
-  
-  # FastCGI address (e.g., /run/php/php-fpm.sock or 127.0.0.1:9000)
-  # Leave empty to auto-detect
-  address: ""
+# The default virtual host if no specific domain matches the request's Host header
+default_vhost:
+  static_dir: "./static"
+  fpm_network: ""
+  fpm_address: ""
+
+# You can define multiple domains (Virtual Hosts) here
+vhosts:
+  "example.local":
+    static_dir: "./static_example"
+    fpm_network: ""
+    fpm_address: ""
