@@ -4,7 +4,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/yookoala/gofast"
 )
@@ -56,11 +59,36 @@ func main() {
 		clientFactory,
 	)
 
+	// Detect PHP version dynamically by matching the PHP-FPM socket version
+	phpVersion := "PHP"
+	phpBin := "php"
+	
+	// Check if the FPM address gives us a hint about the version (like php8.5-fpm.sock)
+	resolvedAddress := fpmAddress
+	if fpmNetwork == "unix" {
+		if resolved, err := filepath.EvalSymlinks(fpmAddress); err == nil {
+			resolvedAddress = resolved
+		}
+	}
+
+	if strings.Contains(resolvedAddress, "8.5") {
+		phpBin = "php8.5"
+	} else if strings.Contains(resolvedAddress, "8.4") {
+		phpBin = "php8.4"
+	}
+
+	if out, err := exec.Command(phpBin, "-r", "echo phpversion();").Output(); err == nil {
+		re := regexp.MustCompile(`\d+\.\d+\.\d+`)
+		if match := re.FindString(string(out)); match != "" {
+			phpVersion = "PHP/" + match
+		}
+	}
+
 	// Main routing handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Set custom headers
 		w.Header().Set("Server", "Go-Web-Server")
-		w.Header().Set("X-Powered-By", "PHP")
+		w.Header().Set("X-Powered-By", phpVersion)
 
 		// Serve all responses from PHP-FPM (Front Controller pattern)
 		// We route everything to /index.php, preserving the original RequestURI for PHP to read
